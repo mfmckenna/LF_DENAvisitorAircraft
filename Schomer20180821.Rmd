@@ -1,0 +1,840 @@
+---
+title: "PranavPaulAnalysis"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+These analyses work with the Grand Canyon soundscape pleasantness study conducted by Paul Schomer's team. The study spanned three trails: Hermit, Bright Angle, and Widforss (North Rim). The surveys include evaluations of segments as well as the total hike. Pranav was able to bring in QT helicopter data. 
+
+This first chunk reads the data and prepares them for processing.
+```{r}
+library(ordinal)
+library(MuMIn)
+library(data.table)
+library(party)
+library(lme4)
+library(gamm4)
+library(ggplot2)
+rm(list=ls())
+srcdir <- "D:/Lexar/Schomer/"
+grcaqt <- fread(input=paste(srcdir,"Number of OPs by Segment.txt",sep=""))
+grcaqt$Date <- as.POSIXct(strptime(paste(as.Date(grcaqt$Date,origin="1899-12-30"),grcaqt$"Time-1"),
+                                   format="%F %I:%M:%S %p"))
+ix <- c("Time(24)","Seg Present","Time-1","Start Time","Seperated start times")
+grcaqt <- grcaqt[,-match(ix,names(grcaqt)),with=F]
+names(grcaqt) <- gsub(pattern="[\\. -/]",replacement="",names(grcaqt))
+#pcol <- colorRampPalette(c("darkviolet","hotpink"))(7)
+pcol <- rev(gray(seq(0,6)/7))
+#plot(jitter(grcaqt$Totalseg),jitter(grcaqt$ECseg),type='p',
+#  pch=".",col=pcol[grcaqt$Pleasant1],cex=3)
+#legend(x="bottomright",fill=pcol,legend=1:7)
+
+hermit <- fread(input=paste(srcdir,"GrcaHermitTabDelimited.txt",sep=""),sep="\t")
+bright <- fread(input=paste(srcdir,"Bright Angel Stacked For Use tab delimited.txt",sep=""))
+widfor <- fread(input=paste(srcdir,"Widforss Stacked tab delimited.txt",sep=""))
+bright <- bright[,apply(!is.na(bright),2,any),with=F]
+names(hermit) <- gsub(pattern="[-_#\\(\\)\\. /]",replacement="",names(hermit))
+names(bright) <- gsub(pattern="[-_#\\(\\)\\. /]",replacement="",names(bright))
+names(widfor) <- gsub(pattern="[-_#\\(\\)\\. /]",replacement="",names(widfor))
+ix <- grep(patt="^V[0-9][0-9]",names(hermit))
+hermit <- hermit[,-ix,with=F]
+ix <- grep(patt="^V[0-9][0-9]",names(widfor))
+widfor <- widfor[,-ix,with=F]
+names(hermit) <- sub(pattern="16yr",repl="X16yr",x=names(hermit))
+grall <- hermit[,1:61,with=F]
+bright <- bright[,1:61,with=F]
+widfor <- widfor[,1:61,with=F]                                                               
+names(bright) <- names(grall)
+names(widfor) <- names(grall)
+grall$SurvNum <- paste("h",grall$SurvNum,sep="")
+bright$SurvNum <- paste("b",bright$SurvNum,sep="")
+widfor$SurvNum <- paste("w",widfor$SurvNum,sep="")
+grall <- rbind(grall,bright,widfor)
+grall$Date <- as.POSIXct(strptime(paste(grall$Date,"-2013 ",grall$"Time1",sep=""),
+                                   format="%d-%b-%Y %H:%M"))
+grall[Jet1 < 0,Jet1:= 0]
+grall[PleasantEOH < 0,PleasantEOH := NA]
+grall[NatSoundEOH < 0,NatSoundEOH := NA]
+grall[Gender == 3, Gender := NA]
+grall[X16yr < 0, X16yr := NA]
+grall[Age == -1,Age := NA]
+grall[Age == "40/60",Age := 40]
+grall[Age == "16/60",Age := 60]
+grall[Age == "16/40",Age := 40]
+grall[Age == "15",Age := 16]
+grall[Age == "26", Age := 25]
+nms <- c("Wind1","Jet1","Water1","Thunder1","Bird1","Prop1","Insect1",
+  "Voice1","Vehicle1","Heli1","Yelling1","Walking1")
+for (j in match(nms,names(grall)))
+  set(grall,which(is.na(grall[[j]])),j,0)
+nms <- c(nms,"Gender","FirsTime","X16yr","SurvNum")
+for (j in match(nms,names(grall)))
+  set(grall,which(grall[[j]] < 0),j,NA)
+for (j in match(nms,names(grall)))
+  set(grall,i=NULL,j=j,value=factor(grall[[j]]))
+set(grall,which(grall$NQ < 0),"NQ",NA)
+nms <- c("Pleasant1","PleasantEOH","NatSoundEOH","NQ")
+for (j in match(nms,names(grall)))
+  set(grall,i=NULL,j=j,value=ordered(grall[[j]]))
+jj <- match("Age",names(grall))
+set(x=grall,i=NULL,j=jj,value=as.numeric(grall[[jj]]))
+grall[,("ErgAvg"):=TotErgWoErr/SegDur]
+grall[,("ErgAvg1"):=ErgA1WoErr/SegDur]
+grall[,("ErgAvg2"):=ErgA2WoErr/SegDur]
+grall[,("ErgAvg3"):=Erg3WoErr/SegDur]
+for (j in seq(along=grall))
+  set(grall,which(is.nan(grall[[j]])),j,NA)
+nms <- c("TotErgWoErr","ErgA1WoErr","ErgA2WoErr","Erg3WoErr",
+         "ErgAvg","ErgAvg1","ErgAvg2","ErgAvg3","SegDur")
+for (jj in match(nms,names(grall)))
+  set(grall,i=NULL,j=jj,value=10*log10(sapply(grall[[jj]],max,1)))
+# all trails, including trail name as a factor
+grall[,Trail:=as.factor(substring(grall$SurvNum,1,1))]
+grall[,cHeli:=cumsum(as.numeric(Heli1)-1),by=SurvNum]
+#grall[cHeli>1,cHeli:=2]
+#grall[cHeli>0 & Heli1!="1",cHeli:=0] #NA for plot, 0 for model
+opar <- par(no.readonly = T)
+# plotting Heli1 and LAE effects
+b1 <- .1; b2 <- 2*b1; b3 <- 3*b1; b4 <- 4*b1
+par(fig=c(0,b1,0,1),mgp=c(1.5,0.75,0),mar=c(1.5,.25,.1,.1),oma=c(4,4,1,1))
+ix <- grall$Erg3WoErr == 0 & grall$Heli1 == 0
+A <- hist(as.numeric(grall$Pleasant1[ix]),plot=F,breaks=seq(from=0.5,to=7.5,by=0.5))
+plot(NULL, type = "n", xlim = c(0,1), ylim = c(range(A$breaks)),
+     axes=F, xlab="",ylab="",frame.plot=T)
+text(x=.5,y=7.5,labels = "NoHeli")
+text(x=.5,y=.5,labels = "LAE=0")
+rect(0, 0.25 + A$breaks[1:(length(A$breaks) - 1)], 0.5*A$density,
+     0.25 + A$breaks[2:length(A$breaks)])
+axis(1,at=c(0,0.25,0.5,0.75,1),labels=c(" "," ",".5"," "," "))
+axis(2,outer=T)
+par(fig=c(b1,b2,0,1),new=T)
+ix <- grall$Erg3WoErr > 0 & grall$Heli1 == 0
+B <- hist(as.numeric(grall$Pleasant1[ix]),breaks = A$breaks,plot=F)
+plot(NULL, type = "n", xlim = c(0, 1), ylim = c(range(B$breaks)),
+     axes=F, xlab="",ylab="",frame.plot=T)
+text(x=.5,y=7.5,labels = "NoHeli")
+text(x=.5,y=.5,labels = "LAE>0")
+rect(0, 0.25 + B$breaks[1:(length(B$breaks) - 1)], 0.5*B$density,
+     0.25 + B$breaks[2:length(B$breaks)])
+axis(1,at=c(0,0.25,0.5,0.75,1),labels=c(" "," ",".5"," "," "))
+par(fig=c(b2,b3,0,1),new=T)
+ix <- grall$Erg3WoErr == 0 & grall$Heli1 == 1
+B <- hist(as.numeric(grall$Pleasant1[ix]),breaks = A$breaks,plot=F)
+plot(NULL, type = "n", xlim = c(0, 1), ylim = c(range(B$breaks)),
+     axes=F, xlab="",ylab="",frame.plot=T)
+text(x=.5,y=7.5,labels = "Heli")
+text(x=.5,y=.5,labels = "LAE=0")
+rect(0, 0.25 + B$breaks[1:(length(B$breaks) - 1)], 0.5*B$density,
+     0.25 + B$breaks[2:length(B$breaks)])
+axis(1,at=c(0,0.25,0.5,0.75,1),labels=c(" "," ",".5"," "," "))
+par(fig=c(b3,b4,0,1),new=T)
+ix <- grall$Erg3WoErr > 0 & grall$Heli1 == 1
+B <- hist(as.numeric(grall$Pleasant1[ix]),breaks = A$breaks,plot=F)
+plot(NULL, type = "n", xlim = c(0, 1), ylim = c(range(B$breaks)),
+     axes=F, xlab="",ylab="",frame.plot=T)
+text(x=.5,y=7.5,labels = "Heli")
+text(x=.5,y=.5,labels = "LAE>0")
+rect(0, 0.25 + B$breaks[1:(length(B$breaks) - 1)], 0.5*B$density,
+     0.25 + B$breaks[2:length(B$breaks)])
+axis(1,at=c(0,0.25,0.5,0.75,1),labels=c(" "," ",".5"," "," "))
+yylm <- par()$usr[3:4]
+par(fig=c(b4,1,0,1),new=T)
+ix <- grall$Erg3WoErr > 0
+plot(jitter(grall$Erg3WoErr[ix]),jitter(as.numeric(grall$Pleasant1[ix])),
+     col=rgb(0.2,0.2,0.2,0.2), axes=F, bty="o", frame.plot=T,
+     xlab="",ylab="",ylim=yylm,
+     pch=as.numeric(grall$Heli1)-1,cex=3*(as.numeric(grall$Heli1)-0.75))
+axis(1)
+legend(x="bottomleft",legend=c("NoHeli","Heli"),pch=c(0,1),pt.cex=c(1,3))
+mtext(side=2,text="Segment Pleasantness",outer=T,line=2.5)
+mtext(side=1,text="Helicopter LAE in dB",outer=T,adj=0.8,line=0.5)
+mtext(side=1,text="Fraction of Segments",outer=T,adj=0.12,line=0.5)
+par(opar)
+png(filename="F:/Kurt/NPS/Analyses/Schomer/GrcaCumHeli.png",width=10,height=7.5,units="in",res=300,bg="blanchedalmond")
+par(mfrow=c(2,1),mar=c(0.5,5.1,0,0),mgp=c(2,0.75,0),oma=c(4,0,1,1),cex=2)
+HeliStart <- grall[,cHeli[which.min(Segment)],by=SurvNum]
+par(xaxs="i")
+plot(3,3,xlim=xxlm,ylim=range(as.numeric(grall$Pleasant1),na.rm=T),xlab="",
+     ylab="Segment\nPleasantness",type="n",axes=F)
+for(jline in HeliStart$SurvNum)
+  if(HeliStart$V1[HeliStart$SurvNum==jline]==0)
+    lines(grall$cHeli[grall$SurvNum==jline]+1,grall$Pleasant1[grall$SurvNum==jline],
+        col=rgb(.3,.3,.3,alpha=2/12),type="b")
+jnk <- grall[SurvNum %in% HeliStart$SurvNum[HeliStart$V1==0],
+             mean(as.numeric(Pleasant1)),by=cHeli]
+points(x=jnk$cHeli+1,y=jnk$V1,cex=3)
+axis(2)
+par(xaxs="i")
+plot(3,3,xlim=xxlm,ylim=range(as.numeric(grall$Pleasant1),na.rm=T),xlab="",
+     ylab="Segment\nPleasantness",type="n",axes=F)
+for(jline in HeliStart$SurvNum)
+  if(HeliStart$V1[HeliStart$SurvNum==jline]>0)
+    lines(grall$cHeli[grall$SurvNum==jline]+1,grall$Pleasant1[grall$SurvNum==jline],
+        col=rgb(.3,.3,.3,alpha=2/12),type="b")
+jnk <- grall[SurvNum %in% HeliStart$SurvNum[HeliStart$V1>0],
+             mean(as.numeric(Pleasant1)),by=cHeli]
+points(x=jnk$cHeli+1,y=jnk$V1,cex=3)
+axis(2)
+axis(1,at=1:6,labels=0:5,outer=T)
+mtext("Cumulative Segments with Helicopters Heard",side=1,line=1.75,outer=T,cex=2)
+dev.off()
+#plot(Pleasant1~cHeli,data=grall)
+```
+Noise Audibility Models
+```{r}
+nms0 <- c("ErgAvg3","Erg3WoErr","SegDur","Trail")
+nms0 <- c("ErgAvg3","Erg3WoErr","SegDur","X16yr","FirsTime","Age","Gender","SurvNum","Trail")
+ixna <- !apply(is.na(grall[,match(nms0,names(grall)),with=F]),1,any) &
+                grall$Erg3WoErr!=0
+modls0 <- c(Heli1 ~ ErgAvg3   + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + (1 | SurvNum),
+            Heli1 ~ ErgAvg3   + X16yr  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + X16yr  + (1 | SurvNum),
+            Heli1 ~ ErgAvg3   + FirsTime  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + FirsTime  + (1 | SurvNum),
+            Heli1 ~ ErgAvg3   + Jet1   + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Jet1   + (1 | SurvNum),
+            Heli1 ~ ErgAvg3   + Age   + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Age   + (1 | SurvNum),
+            Heli1 ~ ErgAvg3   + Gender   + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Gender   + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Gender + Trail  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Gender + Trail + Jet1  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Gender + Trail + Jet1  + SegDur + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + X16yr + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + FirsTime  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + Jet1  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + Age  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + Gender  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + SegDur + X16yr + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + SegDur + FirsTime  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + SegDur + Jet1  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + SegDur + Age  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + SegDur + Gender  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + X16yr + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + FirsTime  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + Jet1  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + Age  + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + Trail + (1 | SurvNum),
+            Heli1 ~ ErgAvg3   + Trail + (1 | SurvNum),
+            Heli1 ~ Erg3WoErr + SegDur + Trail + (1 | SurvNum))
+modls0b <- c(Heli1 ~ Erg3WoErr          + (1 | SurvNum),
+             Heli1 ~ Erg3WoErr + Gender + (1 | SurvNum),
+             Heli1 ~ ErgAvg3            + (1 | SurvNum),
+             Heli1 ~ ErgAvg3   + Gender + (1 | SurvNum),
+             Heli1 ~ Erg3WoErr          + Trail + (1 | SurvNum),
+             Heli1 ~ Erg3WoErr + Gender + Trail + (1 | SurvNum),
+             Heli1 ~ ErgAvg3            + Trail + (1 | SurvNum),
+             Heli1 ~ ErgAvg3   + Gender + Trail + (1 | SurvNum),
+             Heli1 ~ Jet1 + Erg3WoErr          + Trail + (1 | SurvNum),
+             Heli1 ~ Jet1 + Erg3WoErr + Gender + Trail + (1 | SurvNum),
+             Heli1 ~ Jet1 + ErgAvg3            + Trail + (1 | SurvNum),
+             Heli1 ~ Jet1 + ErgAvg3   + Gender + Trail + (1 | SurvNum))
+hmods00 <- lapply(modls0,function(mm) glmer(mm,data=grall[ixna], family="binomial", nAGQ=10)) #anonymous functionworkaround for glmer
+mdsum00 <- summary(model.avg(hmods00))
+capture.output(mdsum00,file=paste(srcdir,"AllTrailHeli1.txt",sep=""))
+hmods0 <- lapply(modls0b,function(mm) glmer(mm,data=grall[ixna], family="binomial", nAGQ=10)) #anonymous functionworkaround for glmer
+mdsum0 <- summary(model.avg(hmods0))
+capture.output(mdsum0,file=paste(srcdir,"AllTrailHeli1b.txt",sep=""))
+mnum <- which.min(unlist(lapply(lapply(hmods0,extractAIC),"[",2)))
+plot(grall$Erg3WoErr[ixna],predict(hmods0[[mnum]],type="response"),ylim=c(0.0,1.0),
+     pch=as.character(grall$Trail[ixna]),col=rgb(0.2,0.2,0.2,0.2),
+     xlab="LAE in dB",ylab="Probability of Reporting a Helicopter",
+     mgp=c(2.5,0.75,0))
+Lae <- with(grall, seq(from = floor(min(Erg3WoErr[Erg3WoErr>0])*0.95),
+                       to = ceiling(max(Erg3WoErr)*1.05)))
+for (jj in rev(unique(grall$Trail))){
+  tmpdat <- grall[ixna & Trail==jj,c("SurvNum","Erg3WoErr","Trail","Heli1","Gender","Jet1"),with=F]
+  pp <- lapply(Lae, function(j) { # calculate predicted probabilities and store in a list
+    tmpdat$Erg3WoErr <- j
+    predict(hmods0[[mnum]], newdata = tmpdat, type = "response")
+  })
+  medline <- sapply(pp, median)
+  lines(Lae,medline) #average marginal probabilities
+}
+```
+The next chunk performs the all trail analysis
+```{r}
+grall$cHeli <- factor(grall$cHeli,ordered=T)
+nms <- c("Pleasant1", "ErgAvg","SurvNum","Gender","Wind1","TotErgWoErr","SegDur",
+         "Trail","ErgAvg3","Erg3WoErr","Heli1","Jet1","cHeli","ErgA1WoErr","ErgAvg1")
+ixna <- !apply(is.na(grall[,match(nms,names(grall)),with=F]),1,any)
+modls <- c(Pleasant1 ~ ErgAvg      + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg + (1 | SurvNum),
+           Pleasant1 ~ TotErgWoErr + (1 | SurvNum),
+           Pleasant1 ~ Gender + TotErgWoErr + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + TotErgWoErr + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + TotErgWoErr + (1 | SurvNum),
+           Pleasant1 ~ TotErgWoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + TotErgWoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + TotErgWoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + TotErgWoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg      + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg      + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg      + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg      + Trail + (1 | SurvNum),
+           Pleasant1 ~ TotErgWoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + TotErgWoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + TotErgWoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + TotErgWoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ TotErgWoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + TotErgWoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + TotErgWoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + TotErgWoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Heli1 + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + cHeli + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + cHeli + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + cHeli + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + cHeli + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3   + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3   + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3   + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3   + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg3   + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg3   + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg3   + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg3   + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Erg3WoErr + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Erg3WoErr + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Erg3WoErr + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Erg3WoErr + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Wind1  + ErgA1WoErr + Erg3WoErr + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1:Jet1    + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1:Jet1    + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1:Jet1    + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1:Jet1    + ErgAvg3:Heli1   + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1:Jet1    + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1:Jet1    + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1:Jet1    + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1:Jet1    + ErgAvg3:Heli1   + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + Jet1 + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Jet1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Jet1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Jet1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Heli1 + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Heli1 + Trail + (1 | SurvNum),
+           Pleasant1 ~ Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Heli1 + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Heli1 + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + cHeli + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + cHeli + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1:Jet1    + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1:Jet1    + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1:Jet1    + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1:Jet1    + ErgAvg3:cHeli   + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1:Jet1    + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1:Jet1    + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1:Jet1    + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1:Jet1    + ErgAvg3:cHeli   + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr:Jet1 + Erg3WoErr:cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ ErgAvg1    + ErgAvg3   + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgAvg1    + ErgAvg3   + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgAvg1    + ErgAvg3   + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgAvg1    + ErgAvg3   + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + ErgA1WoErr + Erg3WoErr + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Jet1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Jet1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + Jet1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + cHeli + Trail + SegDur + (1 | SurvNum),
+           Pleasant1 ~ cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + cHeli + Trail + (1 | SurvNum),
+           Pleasant1 ~ cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + cHeli + SegDur + (1 | SurvNum),
+           Pleasant1 ~ cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Wind1  + cHeli + (1 | SurvNum),
+           Pleasant1 ~ Gender + Wind1 + cHeli + (1 | SurvNum))
+hmods <- lapply(modls,clmm,data=grall[ixna],nAGQ=10)
+cnams <- sapply(sapply(hmods,"[[","formula"),as.character)
+#aictab(cand.set=hmods,modnames=cnams[3,])
+junk <- summary(model.avg(hmods))
+write.csv(junk$msTable,file=paste(srcdir,"AllTrailModelSelection.csv",sep=""))
+write.csv(junk$coefmat.subset,file=paste(srcdir,"AllTrailCoefficients.csv",sep=""))
+capture.output(junk,file=paste(srcdir,"AllTrailModels.txt",sep=""))
+save(hmods,file=paste(srcdir,"Hmods.Rdata",sep=""))
+load(file=paste(srcdir,"Hmods.Rdata",sep=""))
+print(mean(unlist(sapply(hmods,"[","ST"))))
+print(order(unlist(sapply(hmods,"[","logLik")),decreasing=T))
+ibest <- which.max(unlist(sapply(hmods,"[","logLik")))
+```
+plotting clmm
+Pleasant1 ~ ErgA1WoErr + Erg3WoErr + Jet1 + Heli1 + Trail + SegDur + (1|SurvNum))
+Pr(y=1) = logit**-1 {(1|site) + offset + sum(betak*xk)}
+Intercept  -7.195
+LAE         0.064
+%TAud       0.017
+PEnHelos    0.017
+PEnProps    0.003
+Survey HR2  0.080
+Importance of calm/peace 0.480
+Visited site before      0.118
+Adults only              0.250
+Watch birds              0.257
+Fairyland (BRCA)
+Taylor Creek (ZION)
+West Rim (ZION)
+Grand-view (GRCA)
+Hermit (GRCA)
+Sperry (GLAC)
+Hidden Lake (GLAC) Overall
+Average time audible (%)      32 14 35 42 77! 23 19 31
+Average helicopter energy (%) 0 0 0 6 80! 86 96 31
+Average prop energy (%)       36 55 30 39 12! 11 4 30
+Adults only (%)               81 71 87 79 89! 83 79 81
+Importance of calm/peace (%)  86 84 89 86 87! 83 84 79
+Visited site before (%)       9 11 28 18 13! 16 22 13
+Never air tour (%)            88 86 87 90 89! 90 91 89
+Watch birds (%)               44 26 30 38 41! 27 28 36
+Talk/presentation (%)         3 1 2 5 6! 6 6 3
+
+```{r}
+Rapoza <- function(LAE,SurvType){
+  Icept=-7.195;Taud=0.017*77;PEheli=0.017*80;PEprop=0.003*12
+  HR2 = 0.080;Ipeace=0.480*.87;Vprev=0.118*.13;Aonly=0.250*.89
+  Wbirds=0.257*.41
+  return(plogis(0.043*LAE+Icept+Taud+PEheli+PEprop+HR2+Ipeace+Vprev+Aonly+Wbirds))
+}
+SplitCoef  <- hmods[[ibest]]$alpha
+SchoCoef <- hmods[[ibest]]$beta
+vnames <- names(grall)[!is.na(charmatch(names(grall),names(SchoCoef)))]
+vnames <- vnames[-match(c("ErgA1","Erg3","Trail","Heli1","Erg3WoErr"),vnames)]
+vmeans <- sapply(lapply(grall[Trail=="h",vnames,with=F],as.numeric),mean,na.rm=T) - c(1,1,1,0,0)
+ix <- charmatch(names(vmeans),names(SchoCoef))
+MF <- vmeans %*% SchoCoef[ix]
+SchoDR  <- function(LaeH,Plevel=7,Hli1=1,Trl="H", ModifierEffects=MF){
+  trloc <- c(0,hmods[[ibest]]$coefficients[c("Trailh","Trailw")])[match(Trl,c("B","H","W"))]
+  Plev <- SplitCoef[max(1,Plevel-1)]
+  ix <- charmatch(c("Erg3WoErr","Heli1"),names(SchoCoef))
+  y <- plogis(q=Plev - SchoCoef[ix[1]]*LaeH - SchoCoef[ix[2]]*Hli1 - ModifierEffects)
+  return(y)
+}
+plot(Lae,rep(0.5,length(Lae)),type="n",ylim=c(0,1),xlab="LAE in dB",
+     ylab="P{pleasantness <= 1:6}")
+for (jj in seq(from=2,to=7)){ #assumes medline is median Hermit from above chunk
+     lines(Lae,SchoDR(LaeH=Lae,Hli1=medline,Plevel=jj))
+  dB <- match(80-(jj-2)*5,Lae)
+  text(x=Lae[dB]+2,y=SchoDR(LaeH=Lae[dB],Hli1=medline[dB],Plevel=jj),
+       labels=jj-1,adj=c(0,1))
+lines(Lae,Rapoza(Lae),lty=3,lwd=2)
+}
+```
+The next chunk performs the Hermit only
+```{r}
+nms <- c("Pleasant1", "ErgAvg","SurvNum","Gender","Wind1","TotErgWoErr","SegDur",
+         "Trail","ErgAvg3","Erg3WoErr","Heli1","Jet1","cHeli","ErgA1WoErr","ErgAvg1")
+ixna <- !apply(is.na(grall[,match(nms,names(grall)),with=F]),1,any)
+ixna <- ixna & grall$Trail == 'h'
+modls2 <- grep(pattern="Trail",x=modls,value=T,invert=T)
+nix <- duplicated(lapply(lapply(lapply(lapply(modls,formula),terms),attr,"term.labels"),sort))
+hmods2 <- lapply(modls2,clmm,data=grall[ixna],nAGQ=10)
+cnams <- sapply(sapply(hmods2,"[[","formula"),as.character)
+#aictab(cand.set=hmods2,modnames=cnams[3,])
+junk <- summary(model.avg(hmods2))
+write.csv(junk$msTable,file=paste(srcdir,"HermitModelSelection.csv",sep=""))
+write.csv(junk$coefmat.subset,file=paste(srcdir,"HermitCoefficients.csv",sep=""))
+
+capture.output(junk,file=paste(srcdir,"HermitTrailModels.txt",sep=""))
+save(hmods2,file=paste(srcdir,"Hmods2.Rdata",sep=""))
+```
+The next chunk performs the QT analysis
+```{r}
+hix <- "h"==substring(grall$SurvNum,1,1)
+hermerg <- merge(x=grall[substring(SurvNum,1,1)=="h",("SNum"):=as.numeric(sub(pattern="^.",replac="",SurvNum))],
+                 y=grcaqt,by.x=c("SNum","Date"),by.y=c("Survey","Date"))
+hermerg[,("QtP"):=(1-ifelse(Totalseg,BellsSeg/Totalseg,0))]
+names(hermerg) <- sub(pattern="\\.x",replacement="",names(hermerg))
+vlist <- c("ErgAvg3","ErgAvg1","Jet1","Heli1","SurvNum","Erg3WoErr","ErgA1WoErr","Totalseg", "QtP","Pleasant1")
+vlist <- match(vlist,names(hermerg))
+summary(hermerg[,vlist,with=F]) #checking the data, found all heli==1
+modls3 <- grep(pattern="Heli1",x=modls2,value=T,invert=T)
+nix <- duplicated(lapply(lapply(lapply(lapply(modls3,formula),terms),attr,"term.labels"),sort))
+modls3 <- c(modls3,sub(pattern="~",replacement="~ QtP +",modls3),
+            sub(pattern="~",replacement="~ Totalseg +",modls3),
+            sub(pattern="~",replacement="~ QtP + Totalseg +",modls3))
+nms3 <- sort(unique(unlist(lapply(lapply(modls3,formula),all.vars))))
+ixna <- !apply(is.na(hermerg[,match(nms3,names(hermerg)),with=F]),1,any)
+hmods3 <- lapply(modls3,clmm,data=hermerg[ixna],nAGQ=10)
+#cnams <- sapply(sapply(hmods3,"[[","formula"),as.character)
+#aictab(cand.set=hmods3,modnames=cnams[3,])
+capture.output(summary(model.avg(hmods3)),file=paste(srcdir,"HermitTrailQt.txt",sep=""))
+```
+End Of Hike
+```{r}
+vmatch <- names(grall)[sapply(grall,is.factor)]
+vmatch <- vmatch[-match(c("SurvNum","Gender","X16yr","FirsTime","NQ","PleasantEOH","NatSoundEOH","Trail"),vmatch)]
+#cforest can work with ordered factor dependent variables
+vmatch = match(vmatch,names(grall))
+#grl <- copy(grall)
+#grall <- copy(grl)
+grall[,(vmatch) := lapply(.SD,as.numeric), .SDcols=vmatch] #worked with col#, not names
+grfmean <- grall[, lapply(.SD, mean), by=SurvNum, .SDcols=vmatch]
+names(grfmean)[-1] <- paste(names(grfmean)[-1],"mean",sep="")
+vmatch <- c("TotErgWoErr","ErgA1WoErr","ErgA2WoErr","Erg3WoErr","ErgAvg","ErgAvg1","ErgAvg2","ErgAvg3")
+vmatch <- match(vmatch,names(grall))
+grvmean <- grall[, lapply(.SD, mean), by=SurvNum, .SDcols=vmatch]
+setkey(grvmean,SurvNum)
+grvmax <- grall[, lapply(.SD, max), by=SurvNum, .SDcols=vmatch]
+setkey(grvmax,SurvNum)
+grvlast <- grall[, lapply(.SD, max), by=SurvNum, .SDcols="Segment"]
+setkey(grvlast,SurvNum)
+vmatch <- c("SurvNum","Segment","TotErgWoErr","ErgA1WoErr","ErgA2WoErr","Erg3WoErr","ErgAvg","ErgAvg1","ErgAvg2","ErgAvg3")
+vmatch <- match(vmatch,names(grall))
+grvlast <- merge(grvlast,grall[,vmatch,with=F],
+                 by.x=c("SurvNum","Segment"),by.y=c("SurvNum","Segment"))
+grvlast[,Segment:=NULL]
+names(grvlast)[-1] <- paste(names(grvlast)[-1],"last",sep="")
+grvall <- merge(grvmean,grvmax)
+names(grvall) <- gsub(pattern="\\.x",repla="mean",names(grvall))
+names(grvall) <- gsub(pattern="\\.y",repla="max",names(grvall))
+
+grvall <- merge(grvall,grvlast)
+grvall <- merge(grvall,grfmean)
+vnames <- match(c("SurvNum","PleasantEOH","NatSoundEOH"),names(grall))
+grvall <- merge(grvall,unique(grall[,vnames,with=F]),
+                by.x="SurvNum",by.y="SurvNum",all.y=F)
+#names(grvall) <- gsub(pattern="\\.x",repla="",names(grvall))
+#vmatch <- c("PleasantEOH.y","NatSoundEOH.y")
+#vmatch = match(vmatch,names(grvall))
+#grvall[,(vmatch) := NULL] #worked with col#, not names
+vnames <- match(c("SurvNum","X16yr","FirsTime","NQ"),names(grall))
+grvall <- merge(grvall,unique(grall[,vnames,with=F]),
+                by.x="SurvNum",by.y="SurvNum",all.y=F)
+ikeep <- !is.na(grvall[,PleasantEOH])
+cfctrl <- cforest_control(ntree=2000)
+grvall[ikeep,wts:=round(sum(ikeep)/.N,0),PleasantEOH]
+cpl <- cforest(PleasantEOH ~ .,controls = cfctrl,weights = grvall$wts[ikeep], data=grvall[ikeep,-c("NatSoundEOH","SurvNum","wts"),with=F])
+junk <- predict(cpl)
+table(grvall$PleasantEOH[ikeep],junk)
+plot(grvall$PleasantEOH[ikeep],junk)
+junk0<-varimp(cpl)
+#repeat for NatSoundEOH
+ikeep2 <- !is.na(grvall[,NatSoundEOH])
+grvall[ikeep2,wts2:=round(sum(ikeep2)/.N,0),NatSoundEOH]
+cpl2 <- cforest(NatSoundEOH ~ .,controls = cfctrl,weights = grvall$wts2[ikeep2], data=grvall[ikeep2,-c("PleasantEOH","SurvNum","wts","wts2"),with=F])
+junk2 <- predict(cpl2)
+table(grvall$NatSoundEOH[ikeep2],junk2)
+plot(grvall$NatSoundEOH[ikeep2],junk2)
+junk3<-varimp(cpl2)
+```
+predictions of EOH Pleasantness and Natural Sounds
+```{r}
+grvlst <- grall[, max(Segment), by=SurvNum]
+names(grvlst)[2] <- "Segment"
+grvlst <- merge(grvlst,grall[,c("SurvNum","SegDur","Pleasant1","Segment"),with=F],
+                 by.x=c("SurvNum","Segment"),by.y=c("SurvNum","Segment"))
+grvlst <- merge(grvlst,grall[, sum(SegDur,na.rm=T), by=SurvNum],by.x="SurvNum",by.y="SurvNum")
+grvlst <- merge(grvlst,grall[, min(Pleasant1,na.rm=T), by=SurvNum],by.x="SurvNum",by.y="SurvNum")
+grvlst <- merge(grvlst,grall[, max(Pleasant1,na.rm=T), by=SurvNum],by.x="SurvNum",by.y="SurvNum")
+grvlst <- merge(grvlst,grall[, mean(as.numeric(Pleasant1),na.rm=T),
+                             by=SurvNum],by.x="SurvNum",by.y="SurvNum")
+names(grvlst)[2:8] <- c("SegL","LstDur","PleasLast","TotDur","PleasMin","PleasMax","PleasAvg")
+grvlst <- merge(grvlst,grall[, sum(as.numeric(Pleasant1)*SegDur,na.rm=T),by=SurvNum],
+                by.x="SurvNum",by.y="SurvNum")
+grvlst[,PleasWvg:=V1/TotDur]
+grvlst[,V1:=NULL]
+grvlst <- merge(grvlst,unique(grall[, .SD ,by=SurvNum,.SDcols=c("PleasantEOH","NatSoundEOH")]),
+                by.x="SurvNum",by.y="SurvNum")
+vmatch <- match("NatSoundEOH",names(grvlst))
+uix <- !apply(is.na(grvlst[,-vmatch,with=F]),1,any)
+gmdls <- c("PleasantEOH ~ PleasLast",
+           "PleasantEOH ~ PleasMin",
+           "PleasantEOH ~ PleasMax",
+           "PleasantEOH ~ PleasAvg",
+           "PleasantEOH ~ PleasWvg")
+gmods <- lapply(gmdls,function(mm) glm(mm,data=grvlst[uix,], family="binomial")) #anonymous functionworkaround for glmer
+mdsum <- summary(model.avg(gmods))
+capture.output(mdsum,file=paste(srcdir,"AllTrailPeoh.txt",sep=""))
+#for NatSoundEOH
+vmatch <- match("PleasantEOH",names(grvlst))
+uix <- !apply(is.na(grvlst[,-vmatch,with=F]),1,any)
+gmdls2 <- c("NatSoundEOH ~ PleasLast",
+           "NatSoundEOH ~ PleasMin",
+           "NatSoundEOH ~ PleasMax",
+           "NatSoundEOH ~ PleasAvg",
+           "NatSoundEOH ~ PleasWvg")
+gmods2 <- lapply(gmdls2,function(mm) glm(mm,data=grvlst[uix,], family="binomial")) #anonymous functionworkaround for glmer
+mdsum2 <- summary(model.avg(gmods2))
+capture.output(mdsum2,file=paste(srcdir,"AllTrailNSeoh.txt",sep=""))
+
+```
+Categorical analysis of segment Pleasantness
+```{r}
+vmatch <- c("SurvNum","Age","Gender","X16yr","FirsTime","NQ","Wind1","Jet1","Water1","Thunder1",
+            "Bird1","Prop1","Insect1","Voice1","Vehicle1","Heli1","Yelling1",
+            "Walking1","Pleasant1","Trail","cHeli")
+#cforest can work with ordered factor dependent variables
+vmatch = match(vmatch,names(grall))
+uix <- !apply(is.na(grall[,vmatch,with=F]),1,any)
+grl <- copy(grall[uix,vmatch,with=F])
+grl[,wts3:=round(dim(grl)[1]/.N,0),Pleasant1]
+cfctrl <- cforest_control(ntree=2000)
+cpl3 <- cforest(Pleasant1 ~ .,controls = cfctrl,weights = grl$wts3, data=grl[,-c("SurvNum","wts3"),with=F])
+jjunk <- predict(cpl3)
+table(grl$Pleasant1,jjunk)
+plot(grl$Pleasant1,jjunk)
+junk3<-varimp(cpl3)
+capture.output(sort(junk3,decreasing = T),
+               file=paste(srcdir,"SegmentCategorical.txt",sep=""))
+sapply(split(as.numeric(grl$Pleasant1),grl$Wind1),FUN=mean)
+#library(edarf)
+#partial_dependence(cpl3) #error in Summary.factor...'sum' not meaningful for factors
+```
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
