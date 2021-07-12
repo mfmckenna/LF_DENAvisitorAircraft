@@ -102,29 +102,22 @@ modOrder
 
 bestModCLM   = ( modlCLMM[[modOrder[1,1]]] )
 summary(bestModCLM)
-
-
-# MODEL AVERAGING
-#-------------------------------------------------------------------------------------------------------
-
+#bestModCLM2   = ( modlCLMM[[modOrder[2,1]]] )
+#summary( bestModCLM2 )
 
 # INTERPRETING STATISTICAL MODEL RESULTS
 #clmm2_tutorial.pdf follow example using our data
 #-------------------------------------------------------------------------------------------------------
-fm2 = bestModCLM
-
 #just run "best" model
-dataIn3$ClipSeqence  = as.factor( dataIn3$ClipSeqence )
-dataIn3$Flight_interest  = as.factor( dataIn3$Flight_interest )
-fm2  = clmm2(RC_Acceptability  ~ (LAeq30s) + ClipSeqence + Flight_interest, random = ID, 
+fm2  = clmm2(RC_Acceptability  ~ LAeq30s + ClipSeqence + Flight_interest, random = ID, 
                    data=dataIn3, nAGQ=10, na.action = na.omit, Hess =TRUE )
 summary(fm2)
-# MODEL SUMMARY:
-# standard deviaitons of visitor response: 2.2
+# copy MODEL SUMMARY in Table 2, G:\My Drive\ActiveProjects\LF_DENAvisitorAircraft\FiguresTables
+# standard deviations of visitor response: 2.2
 # Hessian value high
 # Sign of coefficients
 
-#The odds of rating in category j or above with an interest in air tour flight is 1.2.
+#The odds of rating in category j or above with an interest in air tour flight is 1.2. (??)
 ( exp(coef(fm2)[11]) )
 ( exp(coef(fm2)[10]) )
 ( exp(coef(fm2)[9]) )
@@ -155,7 +148,7 @@ fit1 = (cbind(dataIn2,fitted(bestModCLM)) )
 plot(fit1$ID,fit1$`fitted(bestModCLM)`)
 #RESULT:  visitors precieved soundscape clips differently
 
-#PREDICTED PROBABILITIES....
+#PREDICTED PROBABILITIES:
 dataIn4 = (cbind(dataIn3,fitted(fm2))) # with visitor effect
 dataIn4 = cbind(dataIn4,pred = predict(fm2,newdata = dataIn3)) #AVERAGE VISITOR
 head(dataIn4)
@@ -164,7 +157,7 @@ hist(dataIn4$pred)
 # probability of rating from neutral to acceptible is (with what conditions???):
 plogis(fm2$Theta[5] - fm2$Theta[4]) - plogis(fm2$Theta[4] - fm2$Theta[4])
 
-# extreme judge effect, average judge is 0 b/c random and normally distributed
+# extreme visitor effect, average judge is 0 b/c random and normally distributed
 # @baseline experimental conditions (???)-- average sound level and no flight interest
 qnorm(0.95) * c(-1,1) * fm2$stDev
 pred = function (eta, theta, cat=1:length(theta)+1, inv.link = plogis) {

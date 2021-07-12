@@ -102,40 +102,35 @@ modOrder
 
 bestModCLM   = ( modlCLMM[[modOrder[1,1]]] )
 summary(bestModCLM)
-
-
-# MODEL AVERAGING
-#-------------------------------------------------------------------------------------------------------
-
+#bestModCLM2   = ( modlCLMM[[modOrder[2,1]]] )
+#summary( bestModCLM2 )
 
 # INTERPRETING STATISTICAL MODEL RESULTS
 #clmm2_tutorial.pdf follow example using our data
 #-------------------------------------------------------------------------------------------------------
-fm2 = bestModCLM
-
 #just run "best" model
-dataIn3$ClipSeqence  = as.factor( dataIn3$ClipSeqence )
-dataIn3$Flight_interest  = as.factor( dataIn3$Flight_interest )
-fm2  = clmm2(RC_Acceptability  ~ (LAeq30s) + ClipSeqence + Flight_interest, random = ID, 
+fm2  = clmm2(RC_Acceptability  ~ LAeq30s + ClipSeqence + Flight_interest, random = ID, 
                    data=dataIn3, nAGQ=10, na.action = na.omit, Hess =TRUE )
 summary(fm2)
-# MODEL SUMMARY:
-# standard deviaitons of visitor response: 2.2
+# copy MODEL SUMMARY in Table 2, G:\My Drive\ActiveProjects\LF_DENAvisitorAircraft\FiguresTables
+# standard deviations of visitor response: 2.2
 # Hessian value high
 # Sign of coefficients
 
-#The odds of rating in category j or above with an interest in air tour flight is 1.2.
+#The odds of rating in category j or above with an interest in air tour flight is 1.2. (??)
 ( exp(coef(fm2)[11]) )
 ( exp(coef(fm2)[10]) )
 ( exp(coef(fm2)[9]) )
 
-#SIGNIFICANCE OF VISITOR term: p-value using likelihood ratio tests using ANOVA methods- testing to see if ID (visitor) significant?
+#SIGNIFICANCE OF VISITOR term: 
+# use p-value using likelihood ratio tests using ANOVA methods- testing to see if ID (visitor) significant?
 fm3 = clmm2(RC_Acceptability  ~ (LAeq30s), random = ID, 
              data=dataIn3, nAGQ=10, na.action = na.omit, Hess =TRUE )
 anova(fm2,fm3)
 fm4 = clmm2(RC_Acceptability  ~ LAeq30s + Flight_interest, data=dataIn3)
 anova(fm2,fm4)
-#confidence intervals and profile likelihood of of visitor term
+
+#confidence intervals and profile likelihood of visitor term
 pr2 = profile(fm2, range = c(.1,4), nSteps = 30, trace=0)
 confint(pr2)
 plot(pr2)
@@ -153,9 +148,9 @@ abline(h=0,lty = 2)
 #the fitted or predicted probability for average visitor
 fit1 = (cbind(dataIn2,fitted(bestModCLM)) )
 plot(fit1$ID,fit1$`fitted(bestModCLM)`)
-#RESULT:  visitors precieved soundscape clips differently
+#RESULT:  visitors perceived audio clips differently
 
-#PREDICTED PROBABILITIES....
+#PREDICTED PROBABILITIES:
 dataIn4 = (cbind(dataIn3,fitted(fm2))) # with visitor effect
 dataIn4 = cbind(dataIn4,pred = predict(fm2,newdata = dataIn3)) #AVERAGE VISITOR
 head(dataIn4)
@@ -164,7 +159,7 @@ hist(dataIn4$pred)
 # probability of rating from neutral to acceptible is (with what conditions???):
 plogis(fm2$Theta[5] - fm2$Theta[4]) - plogis(fm2$Theta[4] - fm2$Theta[4])
 
-# extreme judge effect, average judge is 0 b/c random and normally distributed
+# extreme visitor effect, average judge is 0 b/c random and normally distributed
 # @baseline experimental conditions (???)-- average sound level and no flight interest
 qnorm(0.95) * c(-1,1) * fm2$stDev
 pred = function (eta, theta, cat=1:length(theta)+1, inv.link = plogis) {
@@ -182,18 +177,18 @@ SPLquant = as.data.frame( quantile( dataIn4$LAeq30s, c(.05,0.25, 0.5,0.75,0.95) 
 mat = expand.grid(ID = qnorm(0.95) * c(-1,0,1) * fm2$stDev, 
                   ClipSeqence      = (1*fm2$beta[2]), #clip sequence 1
                   LAeq30s          = c(SPLquant[3,1]*fm2$beta[1], SPLquant[5,1] * fm2$beta[1]), 
-                  Flight_interest  = c(0, fm2$beta[6]) )
+                  Flight_interest  = c(0, fm2$beta[3]) ) #no interst = 0, intested = 1
 
 pred.mat = pred(eta=rowSums(mat),theta=fm2$Theta)
-lab = c("Median sound level (64 dBA), No flight interest", 
-        "95th sound level (78 dBA), No flight interest",
-        "Median sound level (64 dBA), Yes flight interest",
-        "95th sound level (78 dBA), Yes flight interest")
+lab = c("Median noise level (64 dBA), No flight interest", 
+        "95th noise level (78 dBA), No flight interest",
+        "Median noise level (64 dBA), Yes flight interest",
+        "95th noise level (78 dBA), Yes flight interest")
 
 par(mfrow=c(2,2))
 for( k in c(1,4,7,10) ) {
   plot(seq(from = -3, to = 4, by =1), pred.mat[k,], lty=2, type="l", ylim=c(0,1),
-  xlab = "Acceptibility scale",axes=FALSE,
+  xlab = "Acceptability rating",axes=FALSE,
   ylab = "Probability", main =lab[ceiling(k/3)])
   axis(1);axis(2)
   lines(seq(from = -3, to = 4, by =1), pred.mat[k+1,],lty=1)
@@ -201,7 +196,7 @@ for( k in c(1,4,7,10) ) {
   legend("toprigh", c("avg visitor","5th percentile","95th percentile"), lty = 1:3, bty="n")
 }
 
-#can I predict probability of 0|1 (acceptibility) for sound levels 40-80, average visitor, no flight interest
+#FIGURE4: predict probability of 0|1 (acceptability) for sound levels 40-80, average visitor, no flight interest
 mat2 = expand.grid(ID = 0, #average visitor
                   ClipSeqence      = 1*fm2$beta[2], #clip sequence 2
                   LAeq30s          = seq(from= 20, to= 80,by=1) * fm2$beta[1], #possible sound levels 
@@ -211,21 +206,67 @@ colnames(pred.mat2) = rownames(as.data.frame( fm2$Theta) )
 DBs = as.data.frame(seq(from= 20, to= 80,by=1))
 colnames(DBs)="LAEQ"
 pred.mat3 = cbind(pred.mat2,DBs)
-#pred.mat2$`-1|0`- probability of rating as unacceptible (<=0)
+#pred.mat2$`-1|0`- probability of rating as unacceptable (<=0)
+pred.mat3 = as.data.frame(pred.mat3)
+#TABLE 3-- copy values
+inMx = pred.mat3$`-4|-3`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`-3|-2`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`-2|-1`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`-1|0`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`0|1`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`1|2`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`2|3`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+inMx = pred.mat3$`3|4`
+max(inMx)
+idx = which.max( (inMx) )
+pred.mat3$LAEQ[idx]
+
+
+library(ggplot2)
 ggplot(pred.mat3, aes(LAEQ,`-1|0`))+
-  geom_point()+
-  ggtitle("Probability of rating as unacceptible (0 or less) (Average visitor, NO flight interest)")
-rowSums(pred.mat2) #do sum of prob equal 1?
+  geom_line()+
+  ggtitle("Probability of rating as unacceptable (0 or less) (Average visitor, NO flight interest)")
+rowSums(pred.mat2) #do sum of prob equal 1? YES!
 
 pred.mat2m = reshape:: melt(pred.mat2)
 DBsm = rbind(DBs,DBs,DBs,DBs,DBs,DBs,DBs,DBs)
 pred.mat2m = cbind(pred.mat2m,DBsm)
 ggplot(pred.mat2m, aes(LAEQ,value,color=variable))+
-  geom_point()+
-  ylab("Probability of rating")
-     
-# OLD: At what sound level does average respondants change to acceptibile? (use management plan to word this question)
+  geom_line()+
+  ylab("") + xlab("")
+ 
+    
+# OLD: At what sound level does average respondents change to acceptability? (use management plan to word this question)
 #dB change
+bestModCLM = fm2 
 (bestModCLM$coefficients[2] - bestModCLM$coefficients[1])  / -0.171661
 (bestModCLM$coefficients[3] - bestModCLM$coefficients[2])  / -0.171661
 (bestModCLM$coefficients[4] - bestModCLM$coefficients[3])  / -0.171661
@@ -234,16 +275,6 @@ ggplot(pred.mat2m, aes(LAEQ,value,color=variable))+
 (bestModCLM$coefficients[7] - bestModCLM$coefficients[6])  / -0.171661
 (bestModCLM$coefficients[8] - bestModCLM$coefficients[7])  / -0.171661
 
-
-# Can we predict acceptibility from modeled sound levels and map acceptibility around different sites?
+# Can we predict acceptability from modeled sound levels and map acceptability around different sites?
 predict(bestModCLM)
-
-
-
-# OUTPUT TABLES OF STATISTICAL MODELS RESULTS
-#-------------------------------------------------------------------------------------------------------
-
-# Predictions
-#-------------------------------------------------------------------------------------------------------
-# Highest rated experience
 

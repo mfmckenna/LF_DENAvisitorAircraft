@@ -3,24 +3,24 @@
     "path": "E:/CODE/GitHub/LF_DENAvisitorAircraft/StatModel_DENAvisitor_20210705.R",
     "project_path": "StatModel_DENAvisitor_20210705.R",
     "type": "r_source",
-    "hash": "929923908",
+    "hash": "0",
     "contents": "",
-    "dirty": false,
+    "dirty": true,
     "created": 1625780927581.0,
     "source_on_save": false,
     "relative_order": 1,
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "106,0",
-        "scrollLine": "70"
+        "cursorPosition": "266,0",
+        "scrollLine": "232"
     },
     "folds": "",
-    "lastKnownWriteTime": 1625803187,
+    "lastKnownWriteTime": 1626028823,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1625803187779,
+    "last_content_update": 1626032649767,
     "read_only": false,
     "read_only_alternatives": []
 }
