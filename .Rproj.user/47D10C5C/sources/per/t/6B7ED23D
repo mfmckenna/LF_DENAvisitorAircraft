@@ -1,0 +1,26 @@
+{
+    "id": "6B7ED23D",
+    "path": "E:/CODE/GitHub/MM_SanctSound_CombineFiles/3_combineFiles_Detections_SB.R",
+    "project_path": null,
+    "type": "r_source",
+    "hash": "2154412461",
+    "contents": "",
+    "dirty": false,
+    "created": 1626118524075.0,
+    "source_on_save": false,
+    "relative_order": 7,
+    "properties": {
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "13,37",
+        "scrollLine": "0"
+    },
+    "folds": "48|23|57|0|\n67|25|70|0|\n74|27|77|0|\n85|27|88|0|\n97|25|100|0|\n104|27|107|0|\n",
+    "lastKnownWriteTime": 1626120810,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1626120810087,
+    "read_only": false,
+    "read_only_alternatives": []
+}

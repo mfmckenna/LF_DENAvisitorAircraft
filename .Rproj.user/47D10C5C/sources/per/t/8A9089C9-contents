@@ -7,8 +7,8 @@ rm(list = ls())
 # READ IN DATA FRAME
 #-------------------------------------------------------------------------------------------------------
 #created Rproject to avoid this step...
-#inDir = "G:\\My Drive\\ActiveProjects\\LF_DENAvisitorAircraft\\code" # SET TO LOCAL DIRECTORY
-#setwd(inDir)
+inDir = "E:\\CODE\\GitHub\\LF_DENAvisitorAircraft" # SET TO LOCAL DIRECTORY
+setwd(inDir)
  
 load("DENA_ModelInputData.RData")
 dataNames = as.data.frame(colnames(ALL2))
@@ -40,6 +40,7 @@ hist(dataIn$Flight_interest, main = "Flight Interest", xlab = "")
 hist(dataIn$Location, main = "Location", xlab = "")
 boxplot(dataIn$LAeq30s ~ factor(dataIn$ClipSeqence), main = "Seq vs level")
 
+#-------------------------------------------------------------------------------------------------------
 # BUILD STATISTICAL MODELS
 # CLMM: Cumulative Link Models, response variable as an ordered factor!
 # good for data with ordered categorical response variables: https://rcompanion.org/handbook/G_01.html
@@ -88,6 +89,7 @@ modlCLMM[[15]] = clmm2(RC_Acceptability  ~ ClipSeqence + Flight_interest + Locat
 # https://stat.ethz.ch/pipermail/r-sig-mixed-models/2011q2/016165.html
 # to deal with convergence warning)
 
+#-------------------------------------------------------------------------------------------------------
 # EVALUATE STATISTICAL MODELS
 #-------------------------------------------------------------------------------------------------------
 AIC_CLMM = NULL
@@ -105,6 +107,7 @@ summary(bestModCLM)
 #bestModCLM2   = ( modlCLMM[[modOrder[2,1]]] )
 #summary( bestModCLM2 )
 
+#-------------------------------------------------------------------------------------------------------
 # INTERPRETING STATISTICAL MODEL RESULTS
 #clmm2_tutorial.pdf follow example using our data
 #-------------------------------------------------------------------------------------------------------
@@ -112,6 +115,7 @@ summary(bestModCLM)
 fm2  = clmm2(RC_Acceptability  ~ LAeq30s + ClipSeqence + Flight_interest, random = ID, 
                    data=dataIn3, nAGQ=10, na.action = na.omit, Hess =TRUE )
 summary(fm2)
+
 # copy MODEL SUMMARY in Table 2, G:\My Drive\ActiveProjects\LF_DENAvisitorAircraft\FiguresTables
 # standard deviations of visitor response: 2.2
 # Hessian value high
@@ -138,7 +142,6 @@ plot(pr2)
 ci = fm2$ranef + qnorm(0.975) * sqrt(fm2$condVar) %o% c(-1,1)
 ord.re = order(fm2$ranef )
 ci = ci[order(fm2$ranef),]
-
 plot(1:length( unique(dataIn3$ID) ), fm2$ranef[ord.re], axes = FALSE, ylim=range(ci), 
      xlab="visitor",ylab = "Visitor effect")
 axis(1,at=1:length( unique(dataIn3$ID) ),labels = ord.re)
@@ -151,33 +154,33 @@ plot(fit1$ID,fit1$`fitted(bestModCLM)`)
 #RESULT:  visitors perceived audio clips differently
 
 #PREDICTED PROBABILITIES:
-dataIn4 = (cbind(dataIn3,fitted(fm2))) # with visitor effect
-dataIn4 = cbind(dataIn4,pred = predict(fm2,newdata = dataIn3)) #AVERAGE VISITOR
+dataIn4 = cbind(dataIn3, fitted(fm2)) # with visitor effect
+dataIn4 = cbind(dataIn4, pred = predict(fm2,newdata = dataIn3)) #AVERAGE VISITOR
 head(dataIn4)
 
 hist(dataIn4$pred)
-# probability of rating from neutral to acceptible is (with what conditions???):
+# probability of rating from neutral to acceptable is (with what conditions???):
 plogis(fm2$Theta[5] - fm2$Theta[4]) - plogis(fm2$Theta[4] - fm2$Theta[4])
 
 # extreme visitor effect, average judge is 0 b/c random and normally distributed
-# @baseline experimental conditions (???)-- average sound level and no flight interest
+# @baseline experimental conditions-- average sound level and no flight interest
 qnorm(0.95) * c(-1,1) * fm2$stDev
 pred = function (eta, theta, cat=1:length(theta)+1, inv.link = plogis) {
   Theta = c(-1e3,theta,1e3)
   sapply(cat, function(j)
     inv.link(Theta[j+1]- eta) - inv.link(Theta[j]- eta) )
 }
-#cumualtive probability of extreme visitor...
+#cumulative probability of extreme visitor...
 round( pred(qnorm(0.05) * fm2$stDev, fm2$Theta), digits = 4)
 
 #COMPUTE probabilities for average, 5th, and 95th percentile visitors two conditions
-# How do I do this for continuous variables??? example on has categorical variables?? (START HERE)
+# How do I do this for continuous variables??? example on has categorical variables
 SPLquant = as.data.frame( quantile( dataIn4$LAeq30s, c(.05,0.25, 0.5,0.75,0.95) ) )
 
 mat = expand.grid(ID = qnorm(0.95) * c(-1,0,1) * fm2$stDev, 
                   ClipSeqence      = (1*fm2$beta[2]), #clip sequence 1
                   LAeq30s          = c(SPLquant[3,1]*fm2$beta[1], SPLquant[5,1] * fm2$beta[1]), 
-                  Flight_interest  = c(0, fm2$beta[3]) ) #no interst = 0, intested = 1
+                  Flight_interest  = c(0, fm2$beta[3]) ) #no interest = 0, interested = 1
 
 pred.mat = pred(eta=rowSums(mat),theta=fm2$Theta)
 lab = c("Median noise level (64 dBA), No flight interest", 
@@ -208,6 +211,7 @@ colnames(DBs)="LAEQ"
 pred.mat3 = cbind(pred.mat2,DBs)
 #pred.mat2$`-1|0`- probability of rating as unacceptable (<=0)
 pred.mat3 = as.data.frame(pred.mat3)
+
 #TABLE 3-- copy values
 inMx = pred.mat3$`-4|-3`
 max(inMx)
@@ -256,25 +260,95 @@ ggplot(pred.mat3, aes(LAEQ,`-1|0`))+
   ggtitle("Probability of rating as unacceptable (0 or less) (Average visitor, NO flight interest)")
 rowSums(pred.mat2) #do sum of prob equal 1? YES!
 
+#FIGURE in paper- save as eps and modify in illustrator
 pred.mat2m = reshape:: melt(pred.mat2)
 DBsm = rbind(DBs,DBs,DBs,DBs,DBs,DBs,DBs,DBs)
 pred.mat2m = cbind(pred.mat2m,DBsm)
 ggplot(pred.mat2m, aes(LAEQ,value,color=variable))+
   geom_line()+
-  ylab("") + xlab("")
- 
-    
-# OLD: At what sound level does average respondents change to acceptability? (use management plan to word this question)
-#dB change
-bestModCLM = fm2 
-(bestModCLM$coefficients[2] - bestModCLM$coefficients[1])  / -0.171661
-(bestModCLM$coefficients[3] - bestModCLM$coefficients[2])  / -0.171661
-(bestModCLM$coefficients[4] - bestModCLM$coefficients[3])  / -0.171661
-(bestModCLM$coefficients[5] - bestModCLM$coefficients[4])  / -0.171661
-(bestModCLM$coefficients[6] - bestModCLM$coefficients[5])  / -0.171661
-(bestModCLM$coefficients[7] - bestModCLM$coefficients[6])  / -0.171661
-(bestModCLM$coefficients[8] - bestModCLM$coefficients[7])  / -0.171661
+  ylab("") + xlab()
+#VALUES for mapping portion of project-- NO flight interest, average visitor
+#this table has probabilities for all sound levels, need to truncate using above figure 
+write.csv(pred.mat2m, "G:\\My Drive\\ActiveProjects\\LF_DENAvisitorAircraft\\MapTable.csv")
+# edit in csv file using the max probiblities to determine noise level ranges that fall with rating category
 
-# Can we predict acceptability from modeled sound levels and map acceptability around different sites?
-predict(bestModCLM)
+
+#Predict probability of (acceptability) for sound levels 40-80, average visitor, YES flight interest
+matYES = expand.grid(ID = 0, #average visitor
+                   ClipSeqence      = 1*fm2$beta[2], #clip sequence 2
+                   LAeq30s          = seq(from= 20, to= 80,by=1) * fm2$beta[1], #possible sound levels 
+                   Flight_interest  = fm2$beta[3] ) #YES fight interest
+pred.matYES = as.data.frame (pred(eta = rowSums(matYES),theta = fm2$Theta))
+
+
+colnames(pred.matYES) = rownames(as.data.frame( fm2$Theta) )
+DBs = as.data.frame(seq(from= 20, to= 80,by=1))
+colnames(DBs)="LAEQ"
+pred.matYES2 = cbind(pred.matYES,DBs)
+
+pred.matYESm = reshape:: melt(pred.matYES)
+DBsm = rbind(DBs,DBs,DBs,DBs,DBs,DBs,DBs,DBs)
+pred.mat2mYES = cbind(pred.matYESm,DBsm)
+#shift to higher rating for higher noise levels
+ggplot(pred.mat2mYES, aes(LAEQ,value,color=variable))+
+  geom_line()+
+  ylab("") + xlab("")
+
+write.csv(pred.mat2mYES, "G:\\My Drive\\ActiveProjects\\LF_DENAvisitorAircraft\\MapTableYES.csv")
+
+#TABLE 3b-- copy values
+inMx = pred.matYES$`-4|-3`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`-3|-2`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`-2|-1`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`-1|0`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`0|1`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`1|2`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`2|3`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+inMx = pred.matYES$`3|4`
+max(inMx)
+idx = which.max( (inMx) )
+pred.matYES$LAEQ[idx]
+
+
+# # OLD: At what sound level does average respondents change to acceptability? (use management plan to word this question)
+# #dB change
+# bestModCLM = fm2 
+# (bestModCLM$coefficients[2] - bestModCLM$coefficients[1])  / -0.171661
+# (bestModCLM$coefficients[3] - bestModCLM$coefficients[2])  / -0.171661
+# (bestModCLM$coefficients[4] - bestModCLM$coefficients[3])  / -0.171661
+# (bestModCLM$coefficients[5] - bestModCLM$coefficients[4])  / -0.171661
+# (bestModCLM$coefficients[6] - bestModCLM$coefficients[5])  / -0.171661
+# (bestModCLM$coefficients[7] - bestModCLM$coefficients[6])  / -0.171661
+# (bestModCLM$coefficients[8] - bestModCLM$coefficients[7])  / -0.171661
+# 
+# # Can we predict acceptability from modeled sound levels and map acceptability around different sites?
+# predict(bestModCLM)
 
